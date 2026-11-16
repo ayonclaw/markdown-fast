@@ -1,0 +1,14 @@
+markdown-fast
+
+parse.js is a specialised rewrite of the tokenizer, lexer and renderer of
+marked 18.1.3 (https://github.com/markedjs/marked, tag v18.1.3, commit
+ba50aa95636ac8f97f46446bbfeb04592ed22216), the reference renderer of
+competition markdown-render-speed-02. The grammar rules and the tokenizing
+algorithm are marked's; the option, hook and extension plumbing is removed and
+the dispatch is restricted to marked's default configuration (gfm on, breaks
+off, pedantic off, async off). marked is MIT licensed:
+
+  Copyright (c) 2018+, MarkedJS (https://github.com/markedjs/)
+  Copyright (c) 2011-2018, Christopher Jeffrey (https://github.com/chjj/)
+
+The full licence text is vendor/marked/LICENSE, as shipped with the package.
