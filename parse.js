@@ -490,7 +490,22 @@ function decodeNumericCharacterReferences(text) {
   });
 }
 
+// Characters encodeURI leaves as they are, plus '%' (encodeURI writes %25 and the
+// replace below turns it straight back): a URL of only these needs no encoding.
+const URL_SAFE = new Uint8Array(128);
+for (const ch of "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789;,/?:@&=+$_.!~*'()#%-") {
+  URL_SAFE[ch.charCodeAt(0)] = 1;
+}
+
 function cleanUrl(href) {
+  let i = 0;
+  const n = href.length;
+  while (i < n) {
+    const c = href.charCodeAt(i);
+    if (c >= 128 || URL_SAFE[c] === 0) break;
+    i++;
+  }
+  if (i === n) return href;
   try {
     href = encodeURI(href).replace(other.percentDecode, '%');
   } catch {
@@ -647,33 +662,45 @@ const state = {
 };
 
 const hintStack = [];
+const hintScratch = { maskedSrc: '', lastStar: -1, lastUnder: -1, lastDel: -1, scanned: false };
 
-/** Last `*` / `_` run that can close emphasis or strong, and last `~` run. */
-function scanClosers(src) {
-  const lastEm = { '*': -1, _: -1 };
+/**
+ * Fill `frame` with the last `*` run, the last `_` run that can close emphasis
+ * or strong, and the last `~` run. Frames are scanned on first use: a run whose
+ * delimiters are never looked up is never walked twice.
+ */
+function scanClosers(frame) {
+  const src = frame.maskedSrc;
+  let lastStar = -1;
+  let lastUnder = -1;
   let lastDel = -1;
   const len = src.length;
   for (let i = 0; i < len; i++) {
     const c = src.charCodeAt(i);
     if (c !== 42 && c !== 95 && c !== 126) continue;
-    const ch = c === 42 ? '*' : c === 95 ? '_' : '~';
     const prev = i === 0 ? '\n' : src[i - 1];
     let j = i + 1;
     while (j < len && src.charCodeAt(j) === c) j++;
     if (prev !== ' ' && prev !== '\t' && prev !== '\n' && prev !== '\r' && prev !== '\f') {
       if (c === 126) {
         lastDel = i;
+      } else if (c === 42) {
+        lastStar = i;
       } else {
-        lastEm[ch] = i;
+        lastUnder = i;
       }
     }
     i = j - 1;
   }
-  return { maskedSrc: src, lastEm, lastDel };
+  frame.lastStar = lastStar;
+  frame.lastUnder = lastUnder;
+  frame.lastDel = lastDel;
+  frame.scanned = true;
+  return frame;
 }
 
 function pushHints(maskedSrc) {
-  hintStack.push(scanClosers(maskedSrc));
+  hintStack.push({ maskedSrc, lastStar: -1, lastUnder: -1, lastDel: -1, scanned: false });
 }
 
 function popHints() {
@@ -683,17 +710,25 @@ function popHints() {
 function lastEmCloserIndex(maskedSrc, delim) {
   const frame = hintStack[hintStack.length - 1];
   if (frame !== undefined && frame.maskedSrc === maskedSrc) {
-    return frame.lastEm[delim];
+    if (!frame.scanned) scanClosers(frame);
+    return delim === '*' ? frame.lastStar : frame.lastUnder;
   }
-  return scanClosers(maskedSrc).lastEm[delim];
+  hintScratch.maskedSrc = maskedSrc;
+  hintScratch.scanned = false;
+  scanClosers(hintScratch);
+  return delim === '*' ? hintScratch.lastStar : hintScratch.lastUnder;
 }
 
 function lastDelCloserIndex(maskedSrc) {
   const frame = hintStack[hintStack.length - 1];
   if (frame !== undefined && frame.maskedSrc === maskedSrc) {
+    if (!frame.scanned) scanClosers(frame);
     return frame.lastDel;
   }
-  return scanClosers(maskedSrc).lastDel;
+  hintScratch.maskedSrc = maskedSrc;
+  hintScratch.scanned = false;
+  scanClosers(hintScratch);
+  return hintScratch.lastDel;
 }
 
 /* ------------------------------------------------------- block tokenizer -- */
@@ -2146,6 +2181,12 @@ function linkInText(text) {
 }
 
 function maskSrc(src) {
+  // Every mask below is applied only where the run holds one of these four
+  // characters; without them the masked copy is the run itself.
+  if (src.indexOf('[') === -1 && src.indexOf('\\') === -1
+    && src.indexOf('`') === -1 && src.indexOf('<') === -1) {
+    return src;
+  }
   let maskedSrc = src;
 
   if (src.indexOf('[') !== -1) {
@@ -2224,14 +2265,17 @@ function inlineTokens(src, tokens = []) {
   state.linkParenPossible = prevLinkParenPossible && src.includes(')');
   try {
     let maskedSrc = src;
-    if (src.indexOf('*') !== -1 || src.indexOf('_') !== -1 || src.indexOf('~') !== -1) {
+    // A run with no delimiter of any kind can hold no emphasis, strong
+    // emphasis or strikethrough: the mask and the closer hints are then moot.
+    const hasDelimiters = src.indexOf('*') !== -1 || src.indexOf('_') !== -1 || src.indexOf('~') !== -1;
+    if (hasDelimiters) {
       maskedSrc = maskSrc(src);
+      pushHints(maskedSrc);
     }
-    pushHints(maskedSrc);
     try {
       return tokenizeInlines(src, maskedSrc, tokens);
     } finally {
-      popHints();
+      if (hasDelimiters) popHints();
     }
   } finally {
     state.linkParenPossible = prevLinkParenPossible;
