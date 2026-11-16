@@ -432,37 +432,27 @@ function isEntityAt(s, i) {
  * `escapeHtmlEntities(html, true)` escapes the five characters always;
  * `escapeHtmlEntities(html)` leaves character references alone.
  */
+const ESCAPE_ALWAYS = new Uint8Array(128);
+ESCAPE_ALWAYS[CH_LT] = 1;
+ESCAPE_ALWAYS[CH_GT] = 1;
+ESCAPE_ALWAYS[CH_QUOT] = 1;
+ESCAPE_ALWAYS[CH_APOS] = 1;
+const ESCAPE_ALWAYS_REP = [];
+ESCAPE_ALWAYS_REP[CH_LT] = '&lt;';
+ESCAPE_ALWAYS_REP[CH_GT] = '&gt;';
+ESCAPE_ALWAYS_REP[CH_QUOT] = '&quot;';
+ESCAPE_ALWAYS_REP[CH_APOS] = '&#39;';
+
 function escapeHtmlEntities(html, encode) {
   const n = html.length;
   let i = 0;
-  if (encode) {
-    while (i < n) {
-      const c = html.charCodeAt(i);
-      if (c === CH_AMP || c === CH_LT || c === CH_GT || c === CH_QUOT || c === CH_APOS) break;
-      i++;
-    }
-    if (i === n) return html;
-    let out = html.slice(0, i);
-    let start = i;
-    for (; i < n; i++) {
-      const c = html.charCodeAt(i);
-      let rep;
-      if (c === CH_AMP) rep = '&amp;';
-      else if (c === CH_LT) rep = '&lt;';
-      else if (c === CH_GT) rep = '&gt;';
-      else if (c === CH_QUOT) rep = '&quot;';
-      else if (c === CH_APOS) rep = '&#39;';
-      else continue;
-      if (start !== i) out += html.slice(start, i);
-      out += rep;
-      start = i + 1;
-    }
-    return start === n ? out : out + html.slice(start);
-  }
-
   while (i < n) {
     const c = html.charCodeAt(i);
-    if (c === CH_LT || c === CH_GT || c === CH_QUOT || c === CH_APOS || (c === CH_AMP && !isEntityAt(html, i))) break;
+    if (c < 128) {
+      if (c === CH_AMP) {
+        if (encode || !isEntityAt(html, i)) break;
+      } else if (ESCAPE_ALWAYS[c] === 1) break;
+    }
     i++;
   }
   if (i === n) return html;
@@ -471,12 +461,12 @@ function escapeHtmlEntities(html, encode) {
   for (; i < n; i++) {
     const c = html.charCodeAt(i);
     let rep;
-    if (c === CH_LT) rep = '&lt;';
-    else if (c === CH_GT) rep = '&gt;';
-    else if (c === CH_QUOT) rep = '&quot;';
-    else if (c === CH_APOS) rep = '&#39;';
-    else if (c === CH_AMP && !isEntityAt(html, i)) rep = '&amp;';
-    else continue;
+    if (c < 128) {
+      if (c === CH_AMP) {
+        if (encode || !isEntityAt(html, i)) rep = '&amp;';
+      } else if (ESCAPE_ALWAYS[c] === 1) rep = ESCAPE_ALWAYS_REP[c];
+    }
+    if (rep === undefined) continue;
     if (start !== i) out += html.slice(start, i);
     out += rep;
     start = i + 1;
@@ -2071,6 +2061,16 @@ function isWwwStart(s, p) {
   return isJsSpaceCode(c) || c === 42 || c === 95 || c === 126 || c === 40;
 }
 
+/** Characters the inline-text stop set never starts with: ASCII letters, digits and the e-mail
+ *  local-part punctuation that is not itself a stop. 1 means "nothing can begin here". */
+const TEXT_PLAIN = new Uint8Array(128);
+for (let i = 48; i <= 57; i++) TEXT_PLAIN[i] = 1;
+for (let i = 65; i <= 90; i++) TEXT_PLAIN[i] = 1;
+for (let i = 97; i <= 122; i++) TEXT_PLAIN[i] = 1;
+for (const c of [35, 36, 37, 38, 39, 43, 45, 46, 47, 61, 63, 123, 124, 125]) TEXT_PLAIN[c] = 1;
+// h, H, f, F open a protocol and w opens "www.": those four letters are checked.
+TEXT_PLAIN[72] = 0; TEXT_PLAIN[70] = 0; TEXT_PLAIN[104] = 0; TEXT_PLAIN[102] = 0; TEXT_PLAIN[119] = 0;
+
 /**
  * How many characters marked's gfm inline-text rule consumes at the start of
  * `src`, i.e. the length of `rules.inline.gfm.text.exec(src)[0]`.
@@ -2098,10 +2098,19 @@ function inlineTextLength(src) {
 
   for (let p = q; p < n; p++) {
     const c = src.charCodeAt(p);
+    // The great majority of characters in prose start nothing at all: a single
+    // table lookup skips them, and every character the table does not skip
+    // falls through to the checks below unchanged.
+    if (c < 128 && TEXT_PLAIN[c] === 1) continue;
+    if (c === 32) {
+      if (isHardBreakAt(src, p)) return p;
+      if (isMailtoAt(src, p + 1) || emailAt(src, p + 1)) return p + 1;
+      continue;
+    }
     if (c === 92 || c === 60 || c === 33 || c === 91 || c === 96 || c === 42 || c === 126 || c === 95) return p;
     if ((c === 104 || c === 72 || c === 102 || c === 70) && protocolAt(src, p)) return p;
     if (c === 119 && p > 0 && isWwwStart(src, p)) return p;
-    if (c !== 32 && p + 1 < n && src.charCodeAt(p + 1) === 32 && isHardBreakAt(src, p + 1)) return p + 1;
+    if (p + 1 < n && src.charCodeAt(p + 1) === 32 && isHardBreakAt(src, p + 1)) return p + 1;
     if (!isAlnumCode(c) && isMailtoAt(src, p + 1)) return p + 1;
     if (!isEmailCode(c) && emailAt(src, p + 1)) return p + 1;
   }
